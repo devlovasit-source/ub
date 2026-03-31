@@ -16,7 +16,6 @@ services:
     env_file:
       - .env
     environment:
-      APP_ROLE: api
       REDIS_URL: redis://redis:6379/0
     expose:
       - "8000"
@@ -30,8 +29,8 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env
+    command: ["celery", "-A", "worker.celery_app", "worker", "--loglevel=info"]
     environment:
-      APP_ROLE: worker
       REDIS_URL: redis://redis:6379/0
     depends_on:
       - redis

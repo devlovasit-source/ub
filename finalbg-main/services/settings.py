@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
-from typing import List, Optional
+from typing import List, Optional, Self
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,6 +26,7 @@ class AppSettings(BaseSettings):
     DEFAULT_WARDROBE_FETCH_LIMIT: int = 1000
     APPWRITE_PAGE_SIZE: int = 100
     MAX_UPLOAD_BYTES: int = 5 * 1024 * 1024
+    AUTH_TOKEN_CACHE_TTL_SECONDS: int = 60
 
     APPWRITE_ENDPOINT: Optional[str] = None
     EXPO_PUBLIC_APPWRITE_ENDPOINT: Optional[str] = None
@@ -52,7 +53,7 @@ class AppSettings(BaseSettings):
         return origins
 
     @model_validator(mode="after")
-    def _validate_required_config(self) -> "AppSettings":
+    def _validate_required_config(self) -> Self:
         if not self.STRICT_ENV_VALIDATION:
             return self
 

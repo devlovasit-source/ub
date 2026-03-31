@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +17,7 @@ from services.rate_limiter import (
     limiter,
     rate_limit_exceeded_handler,
 )
-from services.security_limits import increment_rate_counter, token_subject
+from services.security_limits import increment_rate_counter_async, token_subject
 from services.settings import configure_logging, get_settings
 
 configure_logging()
@@ -183,12 +184,16 @@ _HEAVY_UPLOAD_PATHS = (
 _API_PREFIXES = ("/api", "/garment")
 
 
+class _PayloadTooLarge(Exception):
+    pass
+
+
 @app.middleware("http")
 async def upload_size_guard(request: Request, call_next):
     path = request.url.path or ""
     if any(path.startswith(p) for p in _API_PREFIXES):
         client_ip = (request.client.host if request.client else "") or "unknown"
-        if increment_rate_counter("ip", client_ip, limit=60, window_seconds=60):
+        if await increment_rate_counter_async("ip", client_ip, limit=60, window_seconds=60):
             return JSONResponse(
                 status_code=429,
                 content={"success": False, "error": {"code": "IP_RATE_LIMITED", "message": "Too many requests from this IP"}},
@@ -196,34 +201,67 @@ async def upload_size_guard(request: Request, call_next):
 
         auth_header = request.headers.get("authorization", "")
         token_key = token_subject(auth_header)
-        if token_key and increment_rate_counter("user_token", token_key, limit=100, window_seconds=60):
+        if token_key and await increment_rate_counter_async("user_token", token_key, limit=100, window_seconds=60):
             return JSONResponse(
                 status_code=429,
                 content={"success": False, "error": {"code": "USER_RATE_LIMITED", "message": "Too many requests for this user token"}},
             )
 
-    if request.method.upper() in {"POST", "PUT", "PATCH"}:
-        if any(path.startswith(p) for p in _HEAVY_UPLOAD_PATHS):
-            cl_header = request.headers.get("content-length", "").strip()
-            if cl_header:
-                try:
-                    content_length = int(cl_header)
-                except Exception:
-                    return JSONResponse(
-                        status_code=400,
-                        content={"success": False, "error": {"code": "BAD_CONTENT_LENGTH", "message": "Invalid content-length header"}},
-                    )
-                if content_length > int(settings.MAX_UPLOAD_BYTES):
-                    return JSONResponse(
-                        status_code=413,
-                        content={
-                            "success": False,
-                            "error": {
-                                "code": "REQUEST_TOO_LARGE",
-                                "message": f"Payload exceeds max allowed size of {int(settings.MAX_UPLOAD_BYTES)} bytes",
-                            },
+    should_enforce_body_limit = (
+        request.method.upper() in {"POST", "PUT", "PATCH"}
+        and any(path.startswith(p) for p in _HEAVY_UPLOAD_PATHS)
+    )
+    if should_enforce_body_limit:
+        max_upload_bytes = int(settings.MAX_UPLOAD_BYTES)
+        cl_header = request.headers.get("content-length", "").strip()
+        if cl_header:
+            try:
+                content_length = int(cl_header)
+            except Exception:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "error": {"code": "BAD_CONTENT_LENGTH", "message": "Invalid content-length header"}},
+                )
+            if content_length > max_upload_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "success": False,
+                        "error": {
+                            "code": "REQUEST_TOO_LARGE",
+                            "message": f"Payload exceeds max allowed size of {max_upload_bytes} bytes",
                         },
-                    )
+                    },
+                )
+
+        total_received = 0
+        original_receive = request._receive
+
+        async def limited_receive():
+            nonlocal total_received
+            message = await original_receive()
+            if message.get("type") == "http.request":
+                total_received += len(message.get("body", b""))
+                if total_received > max_upload_bytes:
+                    raise _PayloadTooLarge()
+            return message
+
+        request._receive = limited_receive
+
+        try:
+            return await call_next(request)
+        except _PayloadTooLarge:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": "REQUEST_TOO_LARGE",
+                        "message": f"Payload exceeds max allowed size of {max_upload_bytes} bytes",
+                    },
+                },
+            )
+
     return await call_next(request)
 
 
@@ -244,7 +282,7 @@ async def startup_event():
 async def shutdown_event():
     logger.info("AHVI shutting down")
     try:
-        qdrant_service.close()
+        await asyncio.to_thread(qdrant_service.close)
     except Exception:
         logger.exception("Qdrant shutdown failed")
 
@@ -253,17 +291,17 @@ async def shutdown_event():
 
         close_fn = getattr(appwrite_client, "close", None)
         if callable(close_fn):
-            close_fn()
+            await asyncio.to_thread(close_fn)
     except Exception:
         logger.exception("Appwrite shutdown failed")
 
     try:
         if celery_app:
             if os.getenv("CELERY_BROADCAST_SHUTDOWN_ON_API_EXIT", "true").lower() in ("1", "true", "yes"):
-                celery_app.control.broadcast("shutdown")
+                await asyncio.to_thread(celery_app.control.broadcast, "shutdown")
             close_fn = getattr(celery_app, "close", None)
             if callable(close_fn):
-                close_fn()
+                await asyncio.to_thread(close_fn)
     except Exception:
         logger.exception("Celery shutdown failed")
 
@@ -271,15 +309,15 @@ async def shutdown_event():
         import redis
 
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        redis_client = redis.Redis.from_url(redis_url)
-        redis_client.close()
+        redis_client = await asyncio.to_thread(redis.Redis.from_url, redis_url)
+        await asyncio.to_thread(redis_client.close)
     except Exception:
         logger.exception("Redis shutdown failed")
 
     try:
         from brain.orchestrator import AhviOrchestrator
 
-        AhviOrchestrator._cache.clear()
+        await asyncio.to_thread(AhviOrchestrator._cache.clear)
     except Exception:
         logger.exception("Orchestrator cache cleanup failed")
 
@@ -287,9 +325,9 @@ async def shutdown_event():
         from routers import bg_remover, wardrobe_capture
 
         if hasattr(bg_remover, "clear_model_cache"):
-            bg_remover.clear_model_cache()
+            await asyncio.to_thread(bg_remover.clear_model_cache)
         if hasattr(wardrobe_capture, "clear_model_cache"):
-            wardrobe_capture.clear_model_cache()
+            await asyncio.to_thread(wardrobe_capture.clear_model_cache)
     except Exception:
         logger.exception("Model cache cleanup failed")
 
