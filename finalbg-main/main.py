@@ -192,7 +192,11 @@ class _PayloadTooLarge(Exception):
 async def upload_size_guard(request: Request, call_next):
     path = request.url.path or ""
     if any(path.startswith(p) for p in _API_PREFIXES):
-        client_ip = (request.client.host if request.client else "") or "unknown"
+        forwarded_for = request.headers.get("x-forwarded-for", "").strip()
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip() or "unknown"
+        else:
+            client_ip = (request.client.host if request.client else "") or "unknown"
         if await increment_rate_counter_async("ip", client_ip, limit=60, window_seconds=60):
             return JSONResponse(
                 status_code=429,
@@ -286,14 +290,7 @@ async def shutdown_event():
     except Exception:
         logger.exception("Qdrant shutdown failed")
 
-    try:
-        from services.appwrite_service import client as appwrite_client
-
-        close_fn = getattr(appwrite_client, "close", None)
-        if callable(close_fn):
-            await asyncio.to_thread(close_fn)
-    except Exception:
-        logger.exception("Appwrite shutdown failed")
+    logger.info("Appwrite SDK client has no explicit close() hook; skipping client teardown")
 
     try:
         if celery_app:

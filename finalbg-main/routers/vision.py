@@ -241,9 +241,7 @@ def get_dominant_color(cv_image, k=3):
 # -------------------------
 # MAIN ENDPOINT
 # -------------------------
-@router.post("/analyze-image")
-@limiter.limit("10/minute")
-def analyze_image(request: Request, payload: ImageAnalyzeRequest, user=Depends(get_current_user)):
+def analyze_image_core(payload: ImageAnalyzeRequest, user: dict | None = None):
     if isinstance(user, dict) and user.get("user_id"):
         ensure_user_scope(user, payload.userId)
         payload.userId = user.get("user_id", payload.userId)
@@ -375,6 +373,12 @@ def analyze_image(request: Request, payload: ImageAnalyzeRequest, user=Depends(g
             "llm_fallback": llm_fallback,
         },
     }
+
+
+@router.post("/analyze-image")
+@limiter.limit("10/minute")
+def analyze_image(request: Request, payload: ImageAnalyzeRequest, user=Depends(get_current_user)):
+    return analyze_image_core(payload=payload, user=user)
 
 
 @router.post("/analyze-image/async", status_code=status.HTTP_202_ACCEPTED)

@@ -330,9 +330,7 @@ def _draw_overlay(image: Image.Image, items: List[Dict[str, Any]]) -> str:
     return _image_to_base64(canvas, fmt="JPEG")
 
 
-@router.post("/analyze")
-@limiter.limit("8/minute")
-def analyze_capture(request: Request, payload: CaptureAnalyzeRequest, user=Depends(get_current_user)):
+def analyze_capture_core(payload: CaptureAnalyzeRequest, user: dict | None = None):
     if isinstance(user, dict) and user.get("user_id"):
         ensure_user_scope(user, payload.user_id)
     image = _decode_image_base64(payload.image_base64)
@@ -383,6 +381,12 @@ def analyze_capture(request: Request, payload: CaptureAnalyzeRequest, user=Depen
     }
 
 
+@router.post("/analyze")
+@limiter.limit("8/minute")
+def analyze_capture(request: Request, payload: CaptureAnalyzeRequest, user=Depends(get_current_user)):
+    return analyze_capture_core(payload=payload, user=user)
+
+
 @router.post("/analyze/async", status_code=status.HTTP_202_ACCEPTED)
 @limiter.limit("8/minute")
 def analyze_capture_async(request: Request, payload: CaptureAnalyzeRequest, user=Depends(get_current_user)):
@@ -418,9 +422,7 @@ def _decode_simple_base64(value: str) -> bytes:
         raise HTTPException(status_code=400, detail=f"Invalid item base64: {exc}")
 
 
-@router.post("/save-selected")
-@limiter.limit("20/minute")
-def save_selected(request: Request, payload: SaveSelectedRequest, user=Depends(get_current_user)):
+def save_selected_core(payload: SaveSelectedRequest, user: dict | None = None):
     if isinstance(user, dict) and user.get("user_id"):
         ensure_user_scope(user, payload.user_id)
     selected = set(payload.selected_item_ids or [])
@@ -509,6 +511,12 @@ def save_selected(request: Request, payload: SaveSelectedRequest, user=Depends(g
         "message": f"Saved {len(saved)} selected items to wardrobe.",
         "saved_items": saved,
     }
+
+
+@router.post("/save-selected")
+@limiter.limit("20/minute")
+def save_selected(request: Request, payload: SaveSelectedRequest, user=Depends(get_current_user)):
+    return save_selected_core(payload=payload, user=user)
 
 
 @router.post("/save-selected/async", status_code=status.HTTP_202_ACCEPTED)

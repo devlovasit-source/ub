@@ -1,6 +1,5 @@
 import sys
 import os
-import asyncio
 import base64
 import logging
 
@@ -112,10 +111,6 @@ def _resolve_image_payload(image_ref: str) -> str:
     return raw
 
 
-def _raw_handler(func):
-    return getattr(func, "__wrapped__", func)
-
-
 # =========================
 # AUDIO TASK
 # =========================
@@ -136,12 +131,11 @@ def run_heavy_audio_task(text_to_clone, lang):
 # =========================
 @celery_app.task(name="bg_remove_task")
 def bg_remove_task(image_ref: str):
-    from routers.bg_remover import BGRemoveRequest, remove_background
+    from services.bg_service import process_bg_removal
 
     try:
         image_base64 = _resolve_image_payload(image_ref)
-        req = BGRemoveRequest(image_base64=image_base64)
-        result = asyncio.run(_raw_handler(remove_background)(None, req, {}))
+        result = process_bg_removal(image_base64)
         return {"status": "success", "result": result}
     except Exception as e:
         logger.exception("BG TASK ERROR")
@@ -150,12 +144,12 @@ def bg_remove_task(image_ref: str):
 
 @celery_app.task(name="vision_analyze_task")
 def vision_analyze_task(image_ref: str, user_id: str = "demo_user"):
-    from routers.vision import ImageAnalyzeRequest, analyze_image
+    from routers.vision import ImageAnalyzeRequest, analyze_image_core
 
     try:
         image_base64 = _resolve_image_payload(image_ref)
         req = ImageAnalyzeRequest(image_base64=image_base64, userId=user_id)
-        result = _raw_handler(analyze_image)(None, req, {})
+        result = analyze_image_core(payload=req, user={"user_id": user_id})
         return {"status": "success", "result": result}
     except Exception as e:
         logger.exception("VISION TASK ERROR")
@@ -164,12 +158,12 @@ def vision_analyze_task(image_ref: str, user_id: str = "demo_user"):
 
 @celery_app.task(name="capture_analyze_task")
 def capture_analyze_task(user_id: str, image_ref: str):
-    from routers.wardrobe_capture import CaptureAnalyzeRequest, analyze_capture
+    from routers.wardrobe_capture import CaptureAnalyzeRequest, analyze_capture_core
 
     try:
         image_base64 = _resolve_image_payload(image_ref)
         req = CaptureAnalyzeRequest(user_id=user_id, image_base64=image_base64)
-        result = _raw_handler(analyze_capture)(None, req, {})
+        result = analyze_capture_core(payload=req, user={"user_id": user_id})
         return {"status": "success", "result": result}
     except Exception as e:
         logger.exception("CAPTURE ANALYZE TASK ERROR")
@@ -178,7 +172,7 @@ def capture_analyze_task(user_id: str, image_ref: str):
 
 @celery_app.task(name="capture_save_selected_task")
 def capture_save_selected_task(payload: dict):
-    from routers.wardrobe_capture import DetectedItem, SaveSelectedRequest, save_selected
+    from routers.wardrobe_capture import DetectedItem, SaveSelectedRequest, save_selected_core
 
     try:
         user_id = str(payload.get("user_id", ""))
@@ -191,7 +185,7 @@ def capture_save_selected_task(payload: dict):
             selected_item_ids=selected_item_ids,
             detected_items=detected_items,
         )
-        result = _raw_handler(save_selected)(None, req, {})
+        result = save_selected_core(payload=req, user={"user_id": user_id})
         return {"status": "success", "result": result}
     except Exception as e:
         logger.exception("CAPTURE SAVE TASK ERROR")
